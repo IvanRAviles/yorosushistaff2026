@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <title>Ajustes Cocina</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+  <div id="initLoader"><div class="spinner"></div></div>
+  <div class="kiosk-shell" id="main" style="display:none">
+    <form id="form" class="card" style="width:min(500px,94vw);padding:24px">
+      <div style="text-align:center;margin-bottom:20px">
+        <img src="assets/logo-mark.png" style="height:60px">
+        <h1 style="margin:10px 0">Configuración</h1>
+      </div>
+      <label>URL</label>
+      <input id="url" class="field" type="url" autocorrect="off" autocapitalize="off" required>
+      <label>Key</label>
+      <input id="key" class="field" type="text" autocorrect="off" autocapitalize="off" required>
+      <label>Sucursal</label>
+      <select id="loc" class="field" style="height:56px;opacity:1" disabled><option value="">Conecta primero...</option></select>
+      <div id="msg" class="status-message hidden"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:15px">
+        <button id="btnCon" type="button" class="btn secondary">Conectar</button>
+        <button id="btnSav" type="submit" class="btn" disabled>Guardar</button>
+      </div>
+      <button id="btnBack" type="button" class="btn secondary" style="width:100%;margin-top:10px">Cancelar</button>
+    </form>
+  </div>
+  <script type="module">
+    import { getEnv, saveEnv, getClient } from "./js/supabase.js";
+    if('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(r => r.forEach(w => w.unregister()));
+
+    const els = { url:document.getElementById('url'), key:document.getElementById('key'), loc:document.getElementById('loc'), msg:document.getElementById('msg'), btnCon:document.getElementById('btnCon'), btnSav:document.getElementById('btnSav') };
+
+    window.onload = () => {
+      document.getElementById('initLoader').style.display='none';
+      document.getElementById('main').style.display='flex';
+      const e = getEnv();
+      if(e.url) els.url.value = e.url;
+      if(e.key) els.key.value = e.key;
+    };
+
+    function clean(s) { return (s||'').trim().replace(/\s+/g,'').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"'); }
+    function log(m, t='success') { els.msg.textContent=m; els.msg.className=`status-message ${t}`; els.msg.classList.remove('hidden'); }
+
+    els.btnCon.onclick = async () => {
+      const url=clean(els.url.value), key=clean(els.key.value);
+      els.url.value=url; els.key.value=key;
+      
+      if(!url.includes('supabase.co')) return log('URL inválida', 'error');
+      els.btnCon.textContent='...'; els.btnCon.disabled=true;
+      
+      const client = getClient({url, key});
+      if(!client) return log('Error cliente', 'error');
+
+      try {
+        const {data, error} = await client.from('locations').select('id,name').order('name');
+        if(error) throw error;
+        
+        els.loc.innerHTML='<option value="">Selecciona...</option>';
+        data.forEach(l => els.loc.add(new Option(l.name, l.id)));
+        els.loc.disabled=false; els.btnSav.disabled=false;
+        if(getEnv().locId) els.loc.value=getEnv().locId;
+        log('Conectado');
+      } catch(e) {
+        log(e.message.includes('policy') ? 'Error Permisos SQL' : e.message, 'error');
+      } finally {
+        els.btnCon.textContent='Conectar'; els.btnCon.disabled=false;
+      }
+    };
+
+    document.getElementById('form').onsubmit = (e) => {
+      e.preventDefault();
+      if(!els.loc.value) return log('Selecciona sucursal', 'error');
+      saveEnv(els.url.value, els.key.value, els.loc.value, els.loc.options[els.loc.selectedIndex].text);
+      log('Guardado'); setTimeout(() => location.href='index.html', 500);
+    };
+    document.getElementById('btnBack').onclick = () => location.href='index.html';
+  </script>
+</body>
+</html>
