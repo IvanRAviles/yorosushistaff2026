@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <title>Ajustes Cocina</title>
   <link rel="stylesheet" href="assets/css/styles.css">
 </head>
@@ -30,6 +31,8 @@
   </div>
   <script type="module">
     import { getEnv, saveEnv, getClient } from "./js/supabase.js";
+    
+    // KILL SWITCH
     if('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(r => r.forEach(w => w.unregister()));
 
     const els = { url:document.getElementById('url'), key:document.getElementById('key'), loc:document.getElementById('loc'), msg:document.getElementById('msg'), btnCon:document.getElementById('btnCon'), btnSav:document.getElementById('btnSav') };
@@ -65,7 +68,7 @@
         if(getEnv().locId) els.loc.value=getEnv().locId;
         log('Conectado');
       } catch(e) {
-        log(e.message.includes('policy') ? 'Error Permisos SQL' : e.message, 'error');
+        log(e.message, 'error');
       } finally {
         els.btnCon.textContent='Conectar'; els.btnCon.disabled=false;
       }
