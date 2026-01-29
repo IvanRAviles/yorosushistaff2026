@@ -2,32 +2,36 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Cocina</title>
   <link rel="stylesheet" href="assets/css/styles.css">
 </head>
 <body>
-  <div id="initLoader"><div class="spinner"></div></div>
+  <div id="initLoader"><div class="spinner"></div><div style="opacity:0.8">Cargando...</div></div>
+
   <div class="admin-shell">
     <header class="card" style="margin:10px;padding:15px;display:flex;justify-content:space-between;align-items:center">
       <div style="display:flex;align-items:center;gap:10px">
         <img src="assets/logo-mark.png" style="height:40px">
-        <div><h1 style="font-size:20px;margin:0">Cocina</h1><div id="locName" style="font-size:12px;opacity:0.7">...</div></div>
+        <div><h1 style="font-size:18px;margin:0">Cocina</h1><div id="locName" style="font-size:12px;opacity:0.7">...</div></div>
       </div>
-      <div style="display:flex;gap:10px;align-items:center">
-        <div id="rt" style="width:10px;height:10px;border-radius:50%;background:red"></div>
-        <button id="ref" class="btn secondary" style="width:auto;min-height:40px">↻</button>
-        <button id="cfg" class="btn" style="width:auto;min-height:40px">⚙</button>
+      <div style="display:flex;gap:8px">
+        <div id="rt" style="width:10px;height:10px;border-radius:50%;background:red;margin-top:15px"></div>
+        <button id="ref" class="btn secondary" style="width:auto;min-height:40px;font-size:14px">↻</button>
+        <button id="cfg" class="btn" style="width:auto;min-height:40px;font-size:14px">⚙</button>
       </div>
     </header>
-    <main class="admin-main" style="padding:10px;overflow:auto;height:calc(100vh - 90px)">
+
+    <main class="admin-main" style="padding:10px;overflow-y:auto;height:calc(100vh - 90px)">
       <div id="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:15px"></div>
-      <div id="empty" class="hidden" style="text-align:center;padding:50px;opacity:0.5">Sin Órdenes</div>
+      <div id="empty" class="hidden" style="text-align:center;padding:50px;opacity:0.6"><h2>Sin Órdenes</h2></div>
     </main>
   </div>
 
+  <!-- PIN Modal -->
   <div id="pinModal" class="modal-overlay hidden">
-    <div class="card modal">
+    <div class="modal card">
+      <h2 style="text-align:center">Acceso</h2>
       <div id="pinDisp" class="pin-screen"></div>
       <div class="pin-pad">
         <button class="pin-key" data-k="1">1</button><button class="pin-key" data-k="2">2</button><button class="pin-key" data-k="3">3</button>
@@ -35,7 +39,7 @@
         <button class="pin-key" data-k="7">7</button><button class="pin-key" data-k="8">8</button><button class="pin-key" data-k="9">9</button>
         <button class="pin-key" data-k="C">C</button><button class="pin-key" data-k="0">0</button><button class="pin-key" data-k="OK">OK</button>
       </div>
-      <button class="btn secondary" style="margin-top:10px" onclick="document.getElementById('pinModal').classList.add('hidden')">X</button>
+      <button class="btn secondary" id="pinCancel" style="margin-top:10px">Cancelar</button>
     </div>
   </div>
 
@@ -44,20 +48,24 @@
     import { registerSW } from "./js/pwa.js";
     registerSW();
 
-    const els = { grid:document.getElementById('grid'), loc:document.getElementById('locName'), rt:document.getElementById('rt'), empty:document.getElementById('empty') };
-    const env=getEnv(), supabase=getClient();
-    let pin="";
+    const els = { loader:document.getElementById('initLoader'), grid:document.getElementById('grid'), loc:document.getElementById('locName'), rt:document.getElementById('rt'), empty:document.getElementById('empty') };
+    const env = getEnv();
+    const supabase = getClient();
+    let pin = "";
 
     window.onload = async () => {
       if(!env.locId || !supabase) return location.href='ajustes.html';
       els.loc.textContent = env.locName;
-      await fetch();
-      supabase.channel('kitchen').on('postgres_changes',{event:'*',schema:'public',table:'orders',filter:`location_id=eq.${env.locId}`},fetch)
+      await fetchOrders();
+      
+      supabase.channel('kitchen_v5')
+        .on('postgres_changes', {event:'*', schema:'public', table:'orders', filter:`location_id=eq.${env.locId}`}, fetchOrders)
         .subscribe(s => els.rt.style.background = s==='SUBSCRIBED'?'#2ecc71':'red');
-      document.getElementById('initLoader').style.display='none';
+        
+      els.loader.style.display='none';
     };
 
-    async function fetch() {
+    async function fetchOrders() {
       const { data } = await supabase.from('orders').select('*, order_items(*, menu_items(name))')
         .eq('location_id', env.locId).in('status',['pending','preparing','ready']).order('created_at');
       render(data||[]);
@@ -90,16 +98,20 @@
 
     window.upd = async (id, s) => {
       const { error } = await supabase.from('orders').update({status:s}).eq('id',id);
-      if(error) alert(error.code==='42501' ? 'Error Permisos SQL' : error.message);
-      else fetch();
+      if(error) {
+        alert("Error Database: " + error.message);
+      } else {
+        fetchOrders();
+      }
     };
 
-    document.getElementById('ref').onclick = fetch;
+    document.getElementById('ref').onclick = fetchOrders;
     document.getElementById('cfg').onclick = () => document.getElementById('pinModal').classList.remove('hidden');
+    document.getElementById('pinCancel').onclick = () => { document.getElementById('pinModal').classList.add('hidden'); pin=''; document.getElementById('pinDisp').textContent=''; };
     document.querySelectorAll('.pin-key').forEach(b => b.onclick = () => {
       const k = b.dataset.k;
       if(k==='C') pin="";
-      else if(k==='OK') { if(verifyPin(pin, env.locName)) location.href='ajustes.html'; else { pin=""; alert('Mal PIN'); } }
+      else if(k==='OK') { if(verifyPin(pin, env.locName)) location.href='ajustes.html'; else { pin=""; alert('Incorrecto'); } }
       else if(pin.length<4) pin+=k;
       document.getElementById('pinDisp').textContent = "•".repeat(pin.length);
     });
