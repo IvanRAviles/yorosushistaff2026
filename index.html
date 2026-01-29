@@ -3,11 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Cocina</title>
+  <!-- Force No Cache -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>Cocina (Live)</title>
   <link rel="stylesheet" href="assets/css/styles.css">
 </head>
 <body>
-  <div id="initLoader"><div class="spinner"></div><div style="opacity:0.8">Cargando...</div></div>
+  <div id="initLoader"><div class="spinner"></div><div style="opacity:0.8">Conectando...</div></div>
 
   <div class="admin-shell">
     <header class="card" style="margin:10px;padding:15px;display:flex;justify-content:space-between;align-items:center">
@@ -23,12 +27,12 @@
     </header>
 
     <main class="admin-main" style="padding:10px;overflow-y:auto;height:calc(100vh - 90px)">
+      <div id="debugLog" style="color:red;font-size:10px;display:none;margin-bottom:10px;"></div>
       <div id="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:15px"></div>
       <div id="empty" class="hidden" style="text-align:center;padding:50px;opacity:0.6"><h2>Sin Órdenes</h2></div>
     </main>
   </div>
 
-  <!-- PIN Modal -->
   <div id="pinModal" class="modal-overlay hidden">
     <div class="modal card">
       <h2 style="text-align:center">Acceso</h2>
@@ -45,20 +49,35 @@
 
   <script type="module">
     import { getClient, getEnv, verifyPin } from "./js/supabase.js";
-    import { registerSW } from "./js/pwa.js";
-    registerSW();
 
-    const els = { loader:document.getElementById('initLoader'), grid:document.getElementById('grid'), loc:document.getElementById('locName'), rt:document.getElementById('rt'), empty:document.getElementById('empty') };
+    // KILL SWITCH: Force removal of all Service Workers
+    if(window.navigator && navigator.serviceWorker) {
+      navigator.serviceWorker.getRegistrations()
+      .then(function(registrations) {
+        for(let registration of registrations) {
+          registration.unregister();
+          console.log("Service Worker Killed");
+        }
+      });
+    }
+
+    const els = { loader:document.getElementById('initLoader'), grid:document.getElementById('grid'), loc:document.getElementById('locName'), rt:document.getElementById('rt'), empty:document.getElementById('empty'), debug:document.getElementById('debugLog') };
     const env = getEnv();
     const supabase = getClient();
     let pin = "";
+
+    function logError(msg) {
+        els.debug.style.display = 'block';
+        els.debug.innerHTML += `ERROR: ${msg}<br>`;
+        alert(msg); // Force alert on tablet
+    }
 
     window.onload = async () => {
       if(!env.locId || !supabase) return location.href='ajustes.html';
       els.loc.textContent = env.locName;
       await fetchOrders();
       
-      supabase.channel('kitchen_v5')
+      supabase.channel('kitchen_live')
         .on('postgres_changes', {event:'*', schema:'public', table:'orders', filter:`location_id=eq.${env.locId}`}, fetchOrders)
         .subscribe(s => els.rt.style.background = s==='SUBSCRIBED'?'#2ecc71':'red');
         
@@ -66,9 +85,11 @@
     };
 
     async function fetchOrders() {
-      const { data } = await supabase.from('orders').select('*, order_items(*, menu_items(name))')
+      const { data, error } = await supabase.from('orders').select('*, order_items(*, menu_items(name))')
         .eq('location_id', env.locId).in('status',['pending','preparing','ready']).order('created_at');
-      render(data||[]);
+      
+      if(error) logError("Fetch: " + error.message);
+      else render(data||[]);
     }
 
     function render(list) {
@@ -97,9 +118,10 @@
     }
 
     window.upd = async (id, s) => {
+      // Direct update, no policies should block this if SQL step 1 was run
       const { error } = await supabase.from('orders').update({status:s}).eq('id',id);
       if(error) {
-        alert("Error Database: " + error.message);
+        logError("Update Failed: " + error.message + " (Code: " + error.code + ")");
       } else {
         fetchOrders();
       }
