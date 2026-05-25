@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#d61f26">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <title>Cocina (Live)</title>
+</head>
+<body>
+  <div id="initLoader">
+    <div class="spinner"></div>
+    <div style="opacity:0.8">Conectando...</div>
+  </div>
+
+  <div class="admin-shell">
+    <header class="card" style="margin:10px;padding:15px;display:flex;justify-content:space-between;align-items:center">
+      <div style="display:flex;align-items:center;gap:10px">
+        <img src="assets/logo-mark.png" style="height:40px" alt="Logo">
+        <div>
+          <h1 style="font-size:18px;margin:0">Cocina</h1>
+          <div id="locName" style="font-size:12px;opacity:0.7">...</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div id="rt" title="Realtime" style="width:10px;height:10px;border-radius:50%;background:red"></div>
+        <button id="ref" class="btn secondary" style="width:auto;min-height:40px;font-size:14px" type="button">↻</button>
+        <button id="cfg" class="btn" style="width:auto;min-height:40px;font-size:14px" type="button">⚙</button>
+      </div>
+    </header>
+
+    <main class="admin-main" style="padding:10px;overflow-y:auto;height:calc(100vh - 90px)">
+      <div id="statusMsg" style="font-size:12px;opacity:0.75;margin-bottom:10px;display:none;"></div>
+      <div id="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:15px"></div>
+      <div id="empty" class="hidden" style="text-align:center;padding:50px;opacity:0.6">
+        <h2>Sin Órdenes</h2>
+        <div>Esta pantalla se actualizará cuando entren nuevas órdenes.</div>
+      </div>
+    </main>
+  </div>
+
+  <div id="pinModal" class="modal-overlay hidden">
+    <div class="modal card">
+      <h2 style="text-align:center">Acceso</h2>
+      <div id="pinDisp" class="pin-screen"></div>
+      <div class="pin-pad">
+        <button class="pin-key" data-k="1">1</button><button class="pin-key" data-k="2">2</button><button class="pin-key" data-k="3">3</button>
+        <button class="pin-key" data-k="4">4</button><button class="pin-key" data-k="5">5</button><button class="pin-key" data-k="6">6</button>
+        <button class="pin-key" data-k="7">7</button><button class="pin-key" data-k="8">8</button><button class="pin-key" data-k="9">9</button>
+        <button class="pin-key" data-k="C">C</button><button class="pin-key" data-k="0">0</button><button class="pin-key" data-k="OK">OK</button>
+      </div>
+      <button class="btn secondary" id="pinCancel" style="margin-top:10px" type="button">Cancelar</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { getClient, getEnv, verifyPin } from "./js/supabase.js";
+    import { registerSW } from "./js/pwa.js";
+    registerSW();
+
+    const els = {
+      loader: document.getElementById("initLoader"),
+      grid: document.getElementById("grid"),
+      loc: document.getElementById("locName"),
+      rt: document.getElementById("rt"),
+      empty: document.getElementById("empty"),
+      status: document.getElementById("statusMsg"),
+      refresh: document.getElementById("ref"),
+      config: document.getElementById("cfg"),
+      pinModal: document.getElementById("pinModal"),
+      pinDisplay: document.getElementById("pinDisp"),
+      pinCancel: document.getElementById("pinCancel")
+    };
+
+    const env = getEnv();
+    const supabase = getClient();
+    const ACTIVE_STATUSES = ["pending", "preparing", "ready"];
+    let loading = false;
+    let pin = "";
+    let refreshTimer = null;
+
+    function showStatus(message, isError = false) {
+      els.status.style.display = "block";
+      els.status.style.color = isError ? "#ffb4b4" : "inherit";
+      els.status.textContent = message;
+    }
+
+    function hideStatus() {
+      els.status.style.display = "none";
+      els.status.textContent = "";
+    }
+
+    function debounceFetch() {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => fetchOrders(), 250);
+    }
+
+    window.addEventListener("load", async () => {
+      if (!env.url || !env.key || !env.locId || !supabase) {
+        location.href = "ajustes.html";
+        return;
+      }
+
+      els.loc.textContent = env.locName || "Sucursal configurada";
+      await fetchOrders();
+      setupRealtime();
+
+      els.loader.style.display = "none";
+    });
+
+    function getField(obj, keys, fallback = "") {
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== null && obj[key] !== undefined && obj[key] !== "") {
+          return obj[key];
+        }
+      }
+      return fallback;
+    }
+
+    function getItemName(item) {
+      return String(getField(item, ["name", "item_name", "title", "nombre"], "Sin nombre"));
+    }
+
+    function getItemPrice(item) {
+      const cents = getField(item, ["price_cents", "precio_centavos", "cents"], null);
+      if (cents !== null && cents !== "") {
+        const centsNumber = Number(cents);
+        if (Number.isFinite(centsNumber)) return centsNumber / 100;
+      }
+
+      const value = getField(item, ["unit_price", "price", "precio", "amount", "cost"], 0);
+      const number = Number(value);
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    async function fetchOrders() {
+      if (loading || !supabase || !env.locId) return;
+      loading = true;
+
+      try {
+        hideStatus();
+
+        const { data: orders, error: ordersError } = await supabase
+          .from("orders")
+          .select("*")
+          .eq("location_id", env.locId)
+          .in("status", ACTIVE_STATUSES)
+          .order("created_at", { ascending: true });
+
+        if (ordersError) throw ordersError;
+
+        const list = orders || [];
+        const orderIds = list.map((order) => order.id).filter(Boolean);
+
+        if (!orderIds.length) {
+          render([]);
+          return;
+        }
+
+        const { data: orderItems, error: itemsError } = await supabase
+          .from("order_items")
+          .select("*")
+          .in("order_id", orderIds);
+
+        if (itemsError) throw itemsError;
+
+        const itemRows = orderItems || [];
+        const menuIds = [...new Set(itemRows.map((item) => item.menu_item_id).filter(Boolean))];
+        let menuMap = new Map();
+
+        if (menuIds.length) {
+          const { data: menuItems, error: menuError } = await supabase
+            .from("menu_items")
+            .select("*")
+            .in("id", menuIds);
+
+          if (menuError) throw menuError;
+          menuMap = new Map((menuItems || []).map((item) => [item.id, item]));
+        }
+
+        const itemsByOrder = new Map();
+        itemRows.forEach((item) => {
+          const menuItem = menuMap.get(item.menu_item_id) || {};
+          const normalized = {
+            ...item,
+            qty: Number(getField(item, ["qty", "quantity", "cantidad"], 1)) || 1,
+            unit_price: getItemPrice(item),
+            menu_items: {
+              ...menuItem,
+              name: getItemName(menuItem)
+            }
+          };
+
+          const arr = itemsByOrder.get(item.order_id) || [];
+          arr.push(normalized);
+          itemsByOrder.set(item.order_id, arr);
+        });
+
+        const normalizedOrders = list.map((order) => ({
+          ...order,
+          order_items: itemsByOrder.get(order.id) || []
+        }));
+
+        render(normalizedOrders);
+      } catch (err) {
+        console.error(err);
+        showStatus("No se pudieron cargar las órdenes. Revisa conexión o permisos.", true);
+      } finally {
+        loading = false;
+      }
+    }
+
+    function setupRealtime() {
+      const channel = supabase
+        .channel(`staff_kitchen_${env.locId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "orders", filter: `location_id=eq.${env.locId}` },
+          () => debounceFetch()
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "order_items" },
+          () => debounceFetch()
+        )
+        .subscribe((status) => {
+          els.rt.style.background = status === "SUBSCRIBED" ? "#2ecc71" : "red";
+        });
+
+      window.addEventListener("beforeunload", () => {
+        try { supabase.removeChannel(channel); } catch {}
+      });
+    }
+
+    function render(list) {
+      els.grid.innerHTML = "";
+
+      if (!list.length) {
+        els.empty.classList.remove("hidden");
+        return;
+      }
+
+      els.empty.classList.add("hidden");
+
+      list.forEach((order) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.style.padding = "15px";
+
+        const top = document.createElement("div");
+        top.style.display = "flex";
+        top.style.justifyContent = "space-between";
+        top.style.marginBottom = "10px";
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = order.order_type === "dine_in"
+          ? `Mesa ${order.table_number ?? "—"}`
+          : "Llevar";
+
+        const time = document.createElement("span");
+        time.style.fontSize = "12px";
+        time.style.opacity = "0.7";
+        time.textContent = new Date(order.created_at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+
+        top.append(badge, time);
+
+        const itemBox = document.createElement("div");
+        itemBox.style.marginBottom = "15px";
+
+        const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
+        orderItems.forEach((item) => {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;justify-content:space-between;margin-top:5px;border-bottom:1px solid #333;padding-bottom:5px;gap:10px";
+
+          const qty = document.createElement("b");
+          qty.textContent = String(item.qty ?? 0);
+
+          const name = document.createElement("span");
+          name.style.flex = "1";
+          name.textContent = item.menu_items?.name || "(Sin nombre)";
+
+          const price = document.createElement("span");
+          price.textContent = Number(item.unit_price || 0).toFixed(2);
+
+          row.append(qty, name, price);
+          itemBox.appendChild(row);
+        });
+
+        if (!orderItems.length) {
+          const noItems = document.createElement("div");
+          noItems.style.opacity = "0.7";
+          noItems.style.fontSize = "13px";
+          noItems.textContent = "Esperando artículos...";
+          itemBox.appendChild(noItems);
+        }
+
+        const note = document.createElement("div");
+        if (order.customer_note && String(order.customer_note).trim()) {
+          note.style.cssText = "background:#b0191f;padding:5px;border-radius:5px;margin-bottom:10px;font-size:13px;white-space:pre-wrap";
+          note.textContent = String(order.customer_note);
+        }
+
+        const button = document.createElement("button");
+        button.type = "button";
+
+        if (order.status === "preparing") {
+          button.className = "btn secondary";
+          button.textContent = "Listo";
+          button.addEventListener("click", () => updateStatus(order.id, "ready"));
+        } else if (order.status === "ready") {
+          button.className = "btn ghost";
+          button.textContent = "Cerrar";
+          button.addEventListener("click", () => updateStatus(order.id, "closed"));
+        } else {
+          button.className = "btn";
+          button.textContent = "Preparar";
+          button.addEventListener("click", () => updateStatus(order.id, "preparing"));
+        }
+
+        card.append(top, itemBox);
+        if (note.textContent) card.appendChild(note);
+        card.appendChild(button);
+
+        els.grid.appendChild(card);
+      });
+    }
+
+    async function updateStatus(id, status) {
+      if (!id || !status || !env.locId) return;
+
+      try {
+        const { error } = await supabase
+          .from("orders")
+          .update({ status })
+          .eq("id", id)
+          .eq("location_id", env.locId);
+
+        if (error) throw error;
+        await fetchOrders();
+      } catch (err) {
+        console.error(err);
+        showStatus("No se pudo actualizar la orden. Revisa permisos o conexión.", true);
+      }
+    }
+
+    els.refresh.addEventListener("click", () => fetchOrders());
+
+    els.config.addEventListener("click", () => {
+      els.pinModal.classList.remove("hidden");
+      pin = "";
+      els.pinDisplay.textContent = "";
+    });
+
+    els.pinCancel.addEventListener("click", () => {
+      els.pinModal.classList.add("hidden");
+      pin = "";
+      els.pinDisplay.textContent = "";
+    });
+
+    document.querySelectorAll(".pin-key").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.dataset.k;
+
+        if (key === "C") {
+          pin = "";
+        } else if (key === "OK") {
+          if (verifyPin(pin, env.locName)) {
+            location.href = "ajustes.html";
+            return;
+          }
+          pin = "";
+          alert("Incorrecto");
+        } else if (pin.length < 4) {
+          pin += key;
+        }
+
+        els.pinDisplay.textContent = "•".repeat(pin.length);
+      });
+    });
+  </script>
+</body>
+</html>
